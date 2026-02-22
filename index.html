@@ -14,8 +14,8 @@
 </head>
 <body>
 
-<div id="drop-zone">画像を複数選択してドロップ、またはクリック</div>
-<input type="file" id="file-input" multiple accept="image/*" style="display:none">
+<div id="drop-zone">映像･動画を選択してドロップ、またはクリック</div>
+<input type="file" id="file-input" multiple accept="video/*,image/webp" style="display:none">
 
 <div id="status"></div>
 
@@ -25,227 +25,120 @@
     <div id="unique-poses"></div>
 </div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/imghash/0.0.7/index.min.js"></script>
 <script>
-
 const dropZone = document.getElementById('drop-zone');
-
 const fileInput = document.getElementById('file-input');
-
 const status = document.getElementById('status');
 
-
-
 dropZone.onclick = () => fileInput.click();
-
-fileInput.onchange = (e) => processWebP(e.target.files[0]);
-
+fileInput.onchange = (e) => processVideo(e.target.files[0]);
 dropZone.ondragover = (e) => { e.preventDefault(); };
+dropZone.ondrop = (e) => { e.preventDefault(); processVideo(e.dataTransfer.files[0]); };
 
-dropZone.ondrop = (e) => { e.preventDefault(); processWebP(e.dataTransfer.files[0]); };
-
-
-
-async function processWebP(file) {
-
+async function processVideo(file) {
     if (!file) return;
-
-    status.innerText = "解析開始...";
-
-    const imgUrl = URL.createObjectURL(file);
-
+    status.innerText = "動画読み込み中...";
     
+    const video = document.createElement('video');
+    video.src = URL.createObjectURL(file);
+    video.muted = true;
+    video.playsInline = true;
 
-    // WebPアニメーションを全フレームスキャン（擬似的に60分割）
+    await new Promise((resolve) => {
+        video.onloadedmetadata = resolve;
+        video.onerror = () => { status.innerText = "エラー: 対応していない形式です"; };
+    });
 
     const frameCount = 60;
-
     const frames = [];
-
     const offscreenCanvas = document.createElement('canvas');
-
     const ctx = offscreenCanvas.getContext('2d', { willReadFrequently: true });
-
     
-
-    const img = new Image();
-
-    img.src = imgUrl;
-
-    await img.decode();
-
-    
-
-    offscreenCanvas.width = img.width;
-
-    offscreenCanvas.height = img.height;
-
-
-
-    // 実際のアニメーションWebPのコマ送りはブラウザ制御が難しいため、
-
-    // ここではサンプルとして全フレームをpHash化するロジックを回すよ
+    offscreenCanvas.width = video.videoWidth;
+    offscreenCanvas.height = video.videoHeight;
 
     for (let i = 0; i < frameCount; i++) {
+        video.currentTime = (video.duration / frameCount) * i;
+        await new Promise(r => video.onseeked = r);
 
-        ctx.clearRect(0, 0, img.width, img.height);
-
-        ctx.drawImage(img, 0, 0); // 本来はここでフレーム時間を進める
-
+        ctx.clearRect(0, 0, offscreenCanvas.width, offscreenCanvas.height);
+        ctx.drawImage(video, 0, 0);
+        
         const hash = await generatePHash(offscreenCanvas);
-
         frames.push({ hash, url: offscreenCanvas.toDataURL(), id: i });
-
         status.innerText = `スキャン中... (${i+1}/${frameCount})`;
-
     }
-
-
 
     const { uniquePoses, sequence } = clusterPoses(frames);
-
     const pattern = detectMinimalLoop(sequence);
-
     
-
     renderResults(uniquePoses, pattern);
-
 }
-
-
 
 async function generatePHash(canvas) {
-
-    const pSize = 8;
-
+    const pSize = 16; 
     const pCanvas = document.createElement('canvas');
-
     const pCtx = pCanvas.getContext('2d');
-
     pCanvas.width = pSize;
-
     pCanvas.height = pSize;
-
     pCtx.drawImage(canvas, 0, 0, pSize, pSize);
-
     
-
     const data = pCtx.getImageData(0, 0, pSize, pSize).data;
-
     let gray = [];
-
     for (let i = 0; i < data.length; i += 4) {
-
-        gray.push((data[i] + data[i+1] + data[i+2]) / 3);
-
+        gray.push((data[i] * 0.299 + data[i+1] * 0.587 + data[i+2] * 0.114));
     }
-
     const avg = gray.reduce((a, b) => a + b) / gray.length;
-
     return gray.map(g => (g >= avg ? "1" : "0")).join('');
-
 }
-
-
 
 function getHammingDistance(h1, h2) {
-
     let dist = 0;
-
     for (let i = 0; i < h1.length; i++) if (h1[i] !== h2[i]) dist++;
-
     return dist;
-
 }
-
-
 
 function clusterPoses(frames) {
-
     const uniquePoses = [];
-
     const sequence = [];
-
-    const threshold = 8; // ハッシュ距離のしきい値
-
-
+    const threshold = 15; 
 
     frames.forEach(frame => {
-
         let foundIdx = uniquePoses.findIndex(u => getHammingDistance(u.hash, frame.hash) < threshold);
-
         if (foundIdx === -1) {
-
             uniquePoses.push(frame);
-
             foundIdx = uniquePoses.length - 1;
-
         }
-
         sequence.push(String.fromCharCode(65 + foundIdx));
-
     });
-
     return { uniquePoses, sequence };
-
 }
-
-
 
 function detectMinimalLoop(seq) {
-
-    // 連続する重複を1つにまとめる (AAAABBB -> AB)
-
     const simplified = seq.filter((val, i) => val !== seq[i - 1]);
-
     const s = simplified.join('');
-
     
-
-    // 最小の繰り返しパターンを検索
-
-    for (let len = 1; len <= s.length / 2; len++) {
-
+    for (let len = 2; len <= s.length / 2; len++) {
         const sub = s.substring(0, len);
-
         if (s.split(sub).join('').length === 0) return sub.split('');
-
     }
-
-    return simplified;
-
+    return simplified.length > 10 ? simplified.slice(0, 10) : simplified;
 }
-
-
 
 function renderResults(poses, pattern) {
-
-    status.innerText = "解析完了！";
-
+    status.innerText = "解析完了！";f
     document.getElementById('results').style.display = 'block';
-
     document.getElementById('pattern-display').innerText = pattern.join(' → ');
-
     
-
-    const container = document.getElementById('pose-container');
-
+    const container = document.getElementById('unique-poses');
     container.innerHTML = '';
-
     poses.forEach((p, i) => {
-
         const item = document.createElement('div');
-
-        item.className = 'pose-item';
-
+        item.className = 'pose-card';
         item.innerHTML = `<img src="${p.url}"><div>ポーズ ${String.fromCharCode(65+i)}</div>`;
-
         container.appendChild(item);
-
     });
-
 }
-
 </script>
 </body>
-</html>
+</html>　
