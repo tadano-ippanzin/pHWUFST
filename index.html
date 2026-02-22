@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>pHWUFST</title>
+    <style>
+        body { font-family: sans-serif; background: #f0f0f0; padding: 20px; }
+        #drop-zone { border: 3px dashed #ccc; padding: 40px; text-align: center; background: #fff; cursor: pointer; }
+        .result-area { margin-top: 20px; background: #fff; padding: 15px; border-radius: 8px; }
+        .pose-card { display: inline-block; border: 1px solid #ddd; margin: 5px; padding: 5px; text-align: center; }
+        .pose-card img { width: 80px; height: 80px; object-fit: contain; display: block; }
+        .pattern-flow { font-weight: bold; color: #d33; font-size: 1.2em; margin: 10px 0; }
+    </style>
+</head>
+<body>
+
+<div id="drop-zone">画像を複数選択してドロップ、またはクリック</div>
+<input type="file" id="file-input" multiple accept="image/*" style="display:none">
+
+<div id="status"></div>
+
+<div class="result-area" id="results" style="display:none">
+    <h3>解析結果</h3>
+    <div id="pattern-display" class="pattern-flow"></div>
+    <div id="unique-poses"></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/imghash/0.0.7/index.min.js"></script>
+<script>
+const dropZone = document.getElementById('drop-zone');
+const fileInput = document.getElementById('file-input');
+const status = document.getElementById('status');
+
+dropZone.onclick = () => fileInput.click();
+fileInput.onchange = (e) => handleFiles(e.target.files);
+dropZone.ondragover = (e) => { e.preventDefault(); e.target.style.borderColor = '#666'; };
+dropZone.ondrop = (e) => { e.preventDefault(); handleFiles(e.dataTransfer.files); };
+
+async function handleFiles(files) {
+    if (files.length === 0) return;
+    status.innerText = '解析中...';
+    
+    const imageData = [];
+    for (let file of files) {
+        const url = URL.createObjectURL(file);
+        const hash = await getPHash(url);
+        imageData.push({ url, hash });
+    }
+
+    const groups = clusterPoses(imageData);
+    const pattern = detectPattern(groups.sequence);
+    
+    displayResults(groups.uniquePoses, pattern);
+}
+
+async function getPHash(url) {
+    return new Promise(resolve => {
+        const img = new Image();
+        img.onload = () => {
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            canvas.width = 8;
+            canvas.height = 8;
+            ctx.drawImage(img, 0, 0, 8, 8);
+            const data = ctx.getImageData(0, 0, 8, 8).data;
+            let gray = [];
+            for (let i = 0; i < data.length; i += 4) {
+                gray.push((data[i] + data[i+1] + data[i+2]) / 3);
+            }
+            const avg = gray.reduce((a, b) => a + b) / gray.length;
+            let hash = "";
+            gray.forEach(g => hash += (g >= avg ? "1" : "0"));
+            resolve(hash);
+        };
+        img.src = url;
+    });
+}
+
+function hammingDistance(h1, h2) {
+    let dist = 0;
+    for (let i = 0; i < h1.length; i++) if (h1[i] !== h2[i]) dist++;
+    return dist;
+}
+
+function clusterPoses(data) {
+    const uniquePoses = [];
+    const sequence = [];
+    const threshold = 10;
+
+    data.forEach(item => {
+        let foundIndex = uniquePoses.findIndex(u => hammingDistance(u.hash, item.hash) < threshold);
+        if (foundIndex === -1) {
+            uniquePoses.push(item);
+            foundIndex = uniquePoses.length - 1;
+        }
+        sequence.push(String.fromCharCode(65 + foundIndex)); 
+    });
+    return { uniquePoses, sequence };
+}
+
+function detectPattern(seq) {
+    const s = seq.join('');
+    for (let len = 1; len <= s.length / 2; len++) {
+        const sub = s.substring(0, len);
+        if (s.split(sub).join('').length === 0) return sub.split('');
+    }
+    return [...new Set(seq)];
+}
+
+function displayResults(poses, pattern) {
+    status.innerText = '解析完了';
+    document.getElementById('results').style.display = 'block';
+    const container = document.getElementById('unique-poses');
+    container.innerHTML = '';
+    
+    poses.forEach((p, i) => {
+        const card = document.createElement('div');
+        card.className = 'pose-card';
+        card.innerHTML = `<img src="${p.url}">ポーズ ${String.fromCharCode(65+i)}`;
+        container.appendChild(card);
+    });
+
+    document.getElementById('pattern-display').innerText = 'ループパターン: ' + pattern.join(' → ');
+}
+</script>
+</body>
+</html>
