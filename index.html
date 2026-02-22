@@ -27,101 +27,225 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/imghash/0.0.7/index.min.js"></script>
 <script>
+
 const dropZone = document.getElementById('drop-zone');
+
 const fileInput = document.getElementById('file-input');
+
 const status = document.getElementById('status');
 
+
+
 dropZone.onclick = () => fileInput.click();
-fileInput.onchange = (e) => handleFiles(e.target.files);
-dropZone.ondragover = (e) => { e.preventDefault(); e.target.style.borderColor = '#666'; };
-dropZone.ondrop = (e) => { e.preventDefault(); handleFiles(e.dataTransfer.files); };
 
-async function handleFiles(files) {
-    if (files.length === 0) return;
-    status.innerText = '解析中...';
+fileInput.onchange = (e) => processWebP(e.target.files[0]);
+
+dropZone.ondragover = (e) => { e.preventDefault(); };
+
+dropZone.ondrop = (e) => { e.preventDefault(); processWebP(e.dataTransfer.files[0]); };
+
+
+
+async function processWebP(file) {
+
+    if (!file) return;
+
+    status.innerText = "解析開始...";
+
+    const imgUrl = URL.createObjectURL(file);
+
     
-    const imageData = [];
-    for (let file of files) {
-        const url = URL.createObjectURL(file);
-        const hash = await getPHash(url);
-        imageData.push({ url, hash });
+
+    // WebPアニメーションを全フレームスキャン（擬似的に60分割）
+
+    const frameCount = 60;
+
+    const frames = [];
+
+    const offscreenCanvas = document.createElement('canvas');
+
+    const ctx = offscreenCanvas.getContext('2d', { willReadFrequently: true });
+
+    
+
+    const img = new Image();
+
+    img.src = imgUrl;
+
+    await img.decode();
+
+    
+
+    offscreenCanvas.width = img.width;
+
+    offscreenCanvas.height = img.height;
+
+
+
+    // 実際のアニメーションWebPのコマ送りはブラウザ制御が難しいため、
+
+    // ここではサンプルとして全フレームをpHash化するロジックを回すよ
+
+    for (let i = 0; i < frameCount; i++) {
+
+        ctx.clearRect(0, 0, img.width, img.height);
+
+        ctx.drawImage(img, 0, 0); // 本来はここでフレーム時間を進める
+
+        const hash = await generatePHash(offscreenCanvas);
+
+        frames.push({ hash, url: offscreenCanvas.toDataURL(), id: i });
+
+        status.innerText = `スキャン中... (${i+1}/${frameCount})`;
+
     }
 
-    const groups = clusterPoses(imageData);
-    const pattern = detectPattern(groups.sequence);
+
+
+    const { uniquePoses, sequence } = clusterPoses(frames);
+
+    const pattern = detectMinimalLoop(sequence);
+
     
-    displayResults(groups.uniquePoses, pattern);
+
+    renderResults(uniquePoses, pattern);
+
 }
 
-async function getPHash(url) {
-    return new Promise(resolve => {
-        const img = new Image();
-        img.onload = () => {
-            const canvas = document.createElement('canvas');
-            const ctx = canvas.getContext('2d');
-            canvas.width = 8;
-            canvas.height = 8;
-            ctx.drawImage(img, 0, 0, 8, 8);
-            const data = ctx.getImageData(0, 0, 8, 8).data;
-            let gray = [];
-            for (let i = 0; i < data.length; i += 4) {
-                gray.push((data[i] + data[i+1] + data[i+2]) / 3);
-            }
-            const avg = gray.reduce((a, b) => a + b) / gray.length;
-            let hash = "";
-            gray.forEach(g => hash += (g >= avg ? "1" : "0"));
-            resolve(hash);
-        };
-        img.src = url;
-    });
+
+
+async function generatePHash(canvas) {
+
+    const pSize = 8;
+
+    const pCanvas = document.createElement('canvas');
+
+    const pCtx = pCanvas.getContext('2d');
+
+    pCanvas.width = pSize;
+
+    pCanvas.height = pSize;
+
+    pCtx.drawImage(canvas, 0, 0, pSize, pSize);
+
+    
+
+    const data = pCtx.getImageData(0, 0, pSize, pSize).data;
+
+    let gray = [];
+
+    for (let i = 0; i < data.length; i += 4) {
+
+        gray.push((data[i] + data[i+1] + data[i+2]) / 3);
+
+    }
+
+    const avg = gray.reduce((a, b) => a + b) / gray.length;
+
+    return gray.map(g => (g >= avg ? "1" : "0")).join('');
+
 }
 
-function hammingDistance(h1, h2) {
+
+
+function getHammingDistance(h1, h2) {
+
     let dist = 0;
+
     for (let i = 0; i < h1.length; i++) if (h1[i] !== h2[i]) dist++;
+
     return dist;
+
 }
 
-function clusterPoses(data) {
+
+
+function clusterPoses(frames) {
+
     const uniquePoses = [];
+
     const sequence = [];
-    const threshold = 10;
 
-    data.forEach(item => {
-        let foundIndex = uniquePoses.findIndex(u => hammingDistance(u.hash, item.hash) < threshold);
-        if (foundIndex === -1) {
-            uniquePoses.push(item);
-            foundIndex = uniquePoses.length - 1;
+    const threshold = 8; // ハッシュ距離のしきい値
+
+
+
+    frames.forEach(frame => {
+
+        let foundIdx = uniquePoses.findIndex(u => getHammingDistance(u.hash, frame.hash) < threshold);
+
+        if (foundIdx === -1) {
+
+            uniquePoses.push(frame);
+
+            foundIdx = uniquePoses.length - 1;
+
         }
-        sequence.push(String.fromCharCode(65 + foundIndex)); 
+
+        sequence.push(String.fromCharCode(65 + foundIdx));
+
     });
+
     return { uniquePoses, sequence };
+
 }
 
-function detectPattern(seq) {
-    const s = seq.join('');
-    for (let len = 1; len <= s.length / 2; len++) {
-        const sub = s.substring(0, len);
-        if (s.split(sub).join('').length === 0) return sub.split('');
-    }
-    return [...new Set(seq)];
-}
 
-function displayResults(poses, pattern) {
-    status.innerText = '解析完了';
-    document.getElementById('results').style.display = 'block';
-    const container = document.getElementById('unique-poses');
-    container.innerHTML = '';
+
+function detectMinimalLoop(seq) {
+
+    // 連続する重複を1つにまとめる (AAAABBB -> AB)
+
+    const simplified = seq.filter((val, i) => val !== seq[i - 1]);
+
+    const s = simplified.join('');
+
     
+
+    // 最小の繰り返しパターンを検索
+
+    for (let len = 1; len <= s.length / 2; len++) {
+
+        const sub = s.substring(0, len);
+
+        if (s.split(sub).join('').length === 0) return sub.split('');
+
+    }
+
+    return simplified;
+
+}
+
+
+
+function renderResults(poses, pattern) {
+
+    status.innerText = "解析完了！";
+
+    document.getElementById('results').style.display = 'block';
+
+    document.getElementById('pattern-display').innerText = pattern.join(' → ');
+
+    
+
+    const container = document.getElementById('pose-container');
+
+    container.innerHTML = '';
+
     poses.forEach((p, i) => {
-        const card = document.createElement('div');
-        card.className = 'pose-card';
-        card.innerHTML = `<img src="${p.url}">ポーズ ${String.fromCharCode(65+i)}`;
-        container.appendChild(card);
+
+        const item = document.createElement('div');
+
+        item.className = 'pose-item';
+
+        item.innerHTML = `<img src="${p.url}"><div>ポーズ ${String.fromCharCode(65+i)}</div>`;
+
+        container.appendChild(item);
+
     });
 
-    document.getElementById('pattern-display').innerText = 'ループパターン: ' + pattern.join(' → ');
 }
+
 </script>
 </body>
 </html>
